@@ -1,4 +1,5 @@
 from collections import defaultdict
+import re
 
 import numpy as np
 import pandas as pd
@@ -251,14 +252,24 @@ def YOrN_match_prompt(line):
     return tmpl.format(line['question'], line['prediction'])
 
 
-def YOrN_Extraction(output):
-    s = output.lower()
-    words = process_punctuation(s).split()
+def _normalize_yorn_output(text):
+    words = process_punctuation(text.lower()).split()
     if 'yes' in words and 'no' not in words:
         return 'Yes'
     if 'yes' not in words and 'no' in words:
         return 'No'
     return 'Unknown'
+
+
+def YOrN_Extraction(output):
+    # Prefer the model's explicit final answer when it is wrapped in <answer> tags.
+    matches = re.findall(r'<answer>(.*?)</answer>', output, flags=re.IGNORECASE | re.DOTALL)
+    for match in reversed(matches):
+        ans = _normalize_yorn_output(match)
+        if ans != 'Unknown':
+            return ans
+
+    return _normalize_yorn_output(output)
 
 
 def YOrN_auxeval(model, line):
