@@ -170,7 +170,10 @@ def infer_data(model, model_name, work_dir, dataset, out_file, verbose=False, ap
             if getattr(model, 'nframe', None) is not None and getattr(model, 'nframe', 0) > 0:
                 if dataset.nframe > 0:
                     if getattr(model, 'nframe', 0) != dataset.nframe:
-                        print(f'{model_name} is a video-llm model, nframe is set to {dataset.nframe}, not using default')
+                        print(
+                            f'{model_name} is a video-llm model, '
+                            f'nframe is set to {dataset.nframe}, not using default'
+                        )
                         setattr(model, 'nframe', dataset.nframe)
                 elif getattr(model, 'fps', 0) == 0:
                     raise ValueError(f'fps is not suitable for {model_name}')
