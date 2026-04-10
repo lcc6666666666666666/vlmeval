@@ -14,6 +14,7 @@ from vlmeval.smp import dump, get_pred_file_path, get_rank_and_world_size, load
 from vlmeval.utils import track_progress_rich
 
 FAIL_MSG = 'Failed to obtain answer via API.'
+VIDEO_PROGRESS_BAR_FORMAT = '{desc}: {n_fmt}/{total_fmt}|{bar}| {elapsed}<{remaining}'
 
 
 def parse_args():
@@ -156,71 +157,78 @@ def infer_data(model, model_name, work_dir, dataset, out_file, verbose=False, ap
         )
         setattr(model, 'VIDEO_LLM', False)
 
-    for i, idx in tqdm(enumerate(sample_indices_subrem)):
-        if idx in res:
-            continue
-        if getattr(model, 'nframe', None) is not None and getattr(model, 'nframe', 0) > 0:
-            if dataset.nframe > 0:
-                if getattr(model, 'nframe', 0) != dataset.nframe:
-                    print(f'{model_name} is a video-llm model, nframe is set to {dataset.nframe}, not using default')
-                    setattr(model, 'nframe', dataset.nframe)
-            elif getattr(model, 'fps', 0) == 0:
-                raise ValueError(f'fps is not suitable for {model_name}')
+    with tqdm(
+        total=len(sample_indices_sub),
+        initial=len(sample_indices_sub) - len(sample_indices_subrem),
+        desc='已回答的问题',
+        dynamic_ncols=True,
+        bar_format=VIDEO_PROGRESS_BAR_FORMAT,
+    ) as progress:
+        for i, idx in enumerate(sample_indices_subrem):
+            if idx in res:
+                continue
+            if getattr(model, 'nframe', None) is not None and getattr(model, 'nframe', 0) > 0:
+                if dataset.nframe > 0:
+                    if getattr(model, 'nframe', 0) != dataset.nframe:
+                        print(f'{model_name} is a video-llm model, nframe is set to {dataset.nframe}, not using default')
+                        setattr(model, 'nframe', dataset.nframe)
+                elif getattr(model, 'fps', 0) == 0:
+                    raise ValueError(f'fps is not suitable for {model_name}')
+                else:
+                    setattr(model, 'nframe', None)
+            if getattr(model, 'fps', None) is not None and getattr(model, 'fps', 0) > 0:
+                if dataset.fps > 0:
+                    if getattr(model, 'fps', 0) != dataset.fps:
+                        print(f'{model_name} is a video-llm model, fps is set to {dataset.fps}, not using default')
+                        setattr(model, 'fps', dataset.fps)
+                elif getattr(model, 'nframe', 0) == 0:
+                    raise ValueError(f'nframe is not suitable for {model_name}')
+                else:
+                    setattr(model, 'fps', None)
+            if (
+                'Qwen2-VL' in model_name
+                or 'Qwen2.5-VL' in model_name
+                or 'Qwen2.5-Omni' in model_name
+            ):
+                if getattr(model, 'nframe', None) is None and dataset.nframe > 0:
+                    print(f'using {model_name} default setting for video, dataset.nframe is ommitted')
+                if getattr(model, 'fps', None) is None and dataset.fps > 0:
+                    print(f'using {model_name} default setting for video, dataset.fps is ommitted')
+            if 'SUB_DATASET' in dataset.data.iloc[sample_map[idx]]:
+                dataset_name = dataset.data.iloc[sample_map[idx]]['SUB_DATASET']
+            if hasattr(model, 'use_custom_prompt') and model.use_custom_prompt(dataset_name):
+                if dataset.nframe == 0:
+                    raise ValueError(f'nframe must be set for custom prompt, fps is not suitable for {model_name}')
+                struct = model.build_prompt(
+                    dataset.data.iloc[sample_map[idx]], dataset=dataset, video_llm=getattr(model, 'VIDEO_LLM', False)
+                )
             else:
-                setattr(model, 'nframe', None)
-        if getattr(model, 'fps', None) is not None and getattr(model, 'fps', 0) > 0:
-            if dataset.fps > 0:
-                if getattr(model, 'fps', 0) != dataset.fps:
-                    print(f'{model_name} is a video-llm model, fps is set to {dataset.fps}, not using default')
-                    setattr(model, 'fps', dataset.fps)
-            elif getattr(model, 'nframe', 0) == 0:
-                raise ValueError(f'nframe is not suitable for {model_name}')
-            else:
-                setattr(model, 'fps', None)
-        if (
-            'Qwen2-VL' in model_name
-            or 'Qwen2.5-VL' in model_name
-            or 'Qwen2.5-Omni' in model_name
-        ):
-            if getattr(model, 'nframe', None) is None and dataset.nframe > 0:
-                print(f'using {model_name} default setting for video, dataset.nframe is ommitted')
-            if getattr(model, 'fps', None) is None and dataset.fps > 0:
-                print(f'using {model_name} default setting for video, dataset.fps is ommitted')
-        if 'SUB_DATASET' in dataset.data.iloc[sample_map[idx]]:
-            dataset_name = dataset.data.iloc[sample_map[idx]]['SUB_DATASET']
-        if hasattr(model, 'use_custom_prompt') and model.use_custom_prompt(dataset_name):
-            if dataset.nframe == 0:
-                raise ValueError(f'nframe must be set for custom prompt, fps is not suitable for {model_name}')
-            struct = model.build_prompt(
-                dataset.data.iloc[sample_map[idx]], dataset=dataset, video_llm=getattr(model, 'VIDEO_LLM', False)
-            )
-        else:
-            struct = dataset.build_prompt(
-                sample_map[idx], video_llm=getattr(model, 'VIDEO_LLM', False)
-            )
-        if struct is None:
-            continue
+                struct = dataset.build_prompt(
+                    sample_map[idx], video_llm=getattr(model, 'VIDEO_LLM', False)
+                )
+            if struct is None:
+                continue
 
-        # If `SKIP_ERR` flag is set, the model will skip the generation if error is encountered
-        if os.environ.get('SKIP_ERR', False) == '1':
-            FAIL_MSG = 'Failed to obtain answer'
-            try:
+            # If `SKIP_ERR` flag is set, the model will skip the generation if error is encountered
+            if os.environ.get('SKIP_ERR', False) == '1':
+                FAIL_MSG = 'Failed to obtain answer'
+                try:
+                    response = model.generate(message=struct, dataset=dataset_name)
+                except RuntimeError as err:
+                    torch.cuda.synchronize()
+                    warnings.error(f'{type(err)} {str(err)}')
+                    response = f'{FAIL_MSG}: {type(err)} {str(err)}'
+            else:
                 response = model.generate(message=struct, dataset=dataset_name)
-            except RuntimeError as err:
-                torch.cuda.synchronize()
-                warnings.error(f'{type(err)} {str(err)}')
-                response = f'{FAIL_MSG}: {type(err)} {str(err)}'
-        else:
-            response = model.generate(message=struct, dataset=dataset_name)
-        torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
 
-        if verbose:
-            print(response, flush=True)
+            if verbose:
+                print(response, flush=True)
 
-        res[idx] = response
-        if (i + 1) % 20 == 0:
-            dump(res, out_file)
-
+            res[idx] = response
+            progress.update(1)
+            if (i + 1) % 20 == 0:
+                dump(res, out_file)
     res = {k: res[k] for k in sample_indices_sub}
     dump(res, out_file)
     return model
