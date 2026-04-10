@@ -115,9 +115,26 @@ class VideoHallucerDataset(VideoBaseDataset):
 
     @classmethod
     def _resolve_dataset_root(cls, subset, json_file):
-        for root in cls._candidate_dataset_roots():
+        candidate_roots = cls._candidate_dataset_roots()
+        for root in candidate_roots:
             if (root / subset / json_file).exists():
                 return root
+
+        explicit_roots = []
+        for env_key in cls.ROOT_ENV_VARS:
+            env_value = os.environ.get(env_key)
+            if not env_value:
+                continue
+            try:
+                explicit_roots.append(cls._normalize_dataset_root(env_value))
+            except Exception:
+                continue
+        if explicit_roots:
+            missing_paths = [str(root / subset / json_file) for root in explicit_roots]
+            raise FileNotFoundError(
+                'VideoHallucer local dataset root was provided, but the annotation file was not found. '
+                f'Checked: {missing_paths}'
+            )
 
         cache_path = get_cache_path(cls.HF_REPO_ID)
         if cache_path is not None:
@@ -262,13 +279,15 @@ class VideoHallucerDataset(VideoBaseDataset):
                 'pair_id': pair_id,
                 'category': subset['category'].iloc[0],
                 'basic_correct': 0,
-                'halluc_correct': 0,
+                'hallucination_correct': 0,
             }
             for variant in ('basic', 'hallucination'):
                 variant_rows = subset[subset['variant'] == variant]
                 if len(variant_rows):
                     row[f'{variant}_correct'] = int(variant_rows['score'].iloc[0])
-            row['pair_correct'] = int(row['basic_correct'] and row['halluc_correct'])
+            # Keep a shorter alias for downstream summaries while storing the real variant field as well.
+            row['halluc_correct'] = row['hallucination_correct']
+            row['pair_correct'] = int(row['basic_correct'] and row['hallucination_correct'])
             pair_rows.append(row)
 
         pair_df = pd.DataFrame(pair_rows)
@@ -277,7 +296,7 @@ class VideoHallucerDataset(VideoBaseDataset):
 
         metrics = {
             'basic_accuracy': float(pair_df['basic_correct'].mean() * 100),
-            'halluc_accuracy': float(pair_df['halluc_correct'].mean() * 100),
+            'halluc_accuracy': float(pair_df['hallucination_correct'].mean() * 100),
             'accuracy': float(pair_df['pair_correct'].mean() * 100),
             'num_pairs': int(len(pair_df)),
         }
@@ -286,7 +305,7 @@ class VideoHallucerDataset(VideoBaseDataset):
         for category, subset in pair_df.groupby('category', sort=True):
             by_category[str(category)] = {
                 'basic_accuracy': float(subset['basic_correct'].mean() * 100),
-                'halluc_accuracy': float(subset['halluc_correct'].mean() * 100),
+                'halluc_accuracy': float(subset['hallucination_correct'].mean() * 100),
                 'accuracy': float(subset['pair_correct'].mean() * 100),
                 'num_pairs': int(len(subset)),
             }

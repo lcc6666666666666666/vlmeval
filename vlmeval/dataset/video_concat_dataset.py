@@ -63,6 +63,11 @@ class ConcatVideoDataset(VideoBaseDataset):
     def supported_datasets(cls):
         return []  # list(cls.DATASET_SETS)
 
+    def prepare_dataset(self, dataset):
+        raise NotImplementedError(
+            'ConcatVideoDataset manages dataset preparation in its own __init__ and does not use prepare_dataset().'
+        )
+
     def evaluate(self, eval_file, **judge_kwargs):
         # First, split the eval_file by dataset
         data_all = load(eval_file)
