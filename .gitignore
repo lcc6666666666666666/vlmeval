@@ -206,6 +206,10 @@ run_g.sh
 tmp/
 InternVL*
 Qwen*
+!vlmeval/vlm/qwen3_vl/
+!vlmeval/vlm/qwen3_vl/**
+vlmeval/vlm/qwen3_vl/__pycache__/
+vlmeval/vlm/qwen3_vl/**/*.py[cod]
 CongRong*
 Seed1.5*
 aguvis*
