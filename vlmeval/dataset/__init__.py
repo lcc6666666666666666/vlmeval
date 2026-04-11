@@ -136,6 +136,7 @@ from .vcr import VCRDataset
 from .vcrbench import VCRBench
 from .vdc import VDC
 from .video_concat_dataset import ConcatVideoDataset
+from .video_halluc import VideoHalluc, VideoHallucDataset
 from .video_hallucer import VideoHallucer, VideoHallucerDataset
 from .video_holmes import Video_Holmes
 from .video_mmlu import Video_MMLU_CAP, Video_MMLU_QA
@@ -311,6 +312,8 @@ VIDEO_DATASET = [
     Video_MMLU_CAP, Video_MMLU_QA,
     Video_Holmes, VCRBench, CGAVCounting,
     EgoExoBench_MCQ, DREAM, VideoTT, VideoMMMU, MVUEval, OMTGBench, V2PBench, AVSpeakerBench,
+    VideoHalluc,
+    VideoHallucDataset,
     VideoHallucer,
     VideoHallucerDataset,
     VideoMMEv2

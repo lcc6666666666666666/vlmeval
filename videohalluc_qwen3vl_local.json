@@ -1,0 +1,33 @@
+{
+  "model": {
+    "Qwen3-VL-Video-R1-CS-2B": {
+      "class": "Qwen3VLChat",
+      "model_path": "/data1/lgy/model/Qwen3-VL-Video-R1-CS-2B",
+      "moe_model": false,
+      "use_vllm": true,
+      "video_llm": true,
+      "batch_size": 4,
+      "max_token_len": 100000,
+      "min_pixels": 131072,
+      "max_pixels": 262144,
+      "temperature": 0.0,
+      "top_k": 1,
+      "video_num": 1,
+      "cot_process_kwargs": {
+        "re_string": "<think>(?P<think>.*?)</think>.*?<answer>(?P<answer>.*?)</answer>"
+      },
+      "system_prompt": "You are a helpful assistant.",
+      "splicing_system_prompt": false,
+      "infer_kwargs": {
+        "max_new_tokens": 8192
+      }
+    }
+  },
+  "data": {
+    "VideoHalluc_8frame": {},
+    "VideoHalluc_BQA_8frame": {},
+    "VideoHalluc_MCQ_8frame": {},
+    "VideoHalluc_TSH_8frame": {},
+    "VideoHalluc_STH_8frame": {}
+  }
+}

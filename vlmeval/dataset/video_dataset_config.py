@@ -375,6 +375,20 @@ dsr_variants = [
 ]
 dsr_dataset = _build_video_variants(dsr_subsets, DSRBench, dsr_variants)
 
+videohalluc_subsets = VideoHallucDataset.supported_datasets()
+videohalluc_variants = [
+    ("8frame", dict(nframe=8)),
+    ("16frame", dict(nframe=16)),
+    ("32frame", dict(nframe=32)),
+    ("1fps", dict(fps=1.0)),
+]
+videohalluc_dataset = _build_video_variants(
+    videohalluc_subsets, VideoHallucDataset, videohalluc_variants
+)
+videohalluc_all_dataset = _build_video_variants(
+    VideoHalluc.supported_datasets(), VideoHalluc, videohalluc_variants
+)
+
 videohallucer_subsets = VideoHallucerDataset.supported_datasets()
 videohallucer_variants = [
     ("8frame", dict(nframe=8)),
@@ -401,7 +415,8 @@ dataset_groups = [
 # add by EASI team
 dataset_groups += [
     sitebenchvideo_dataset, mmsi_video_dataset, vsisuper_recall_dataset, vsisuper_count_dataset,
-    sti_dataset, dsr_dataset, videohallucer_dataset, videohallucer_all_dataset
+    sti_dataset, dsr_dataset, videohalluc_dataset, videohalluc_all_dataset,
+    videohallucer_dataset, videohallucer_all_dataset
 ]
 
 for grp in dataset_groups:
