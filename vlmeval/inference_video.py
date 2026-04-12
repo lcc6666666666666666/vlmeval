@@ -1,7 +1,9 @@
 import argparse
+import signal
 import os
 import os.path as osp
-import warnings
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 
 import numpy as np
@@ -13,8 +15,89 @@ from vlmeval.config import supported_VLM
 from vlmeval.smp import dump, get_pred_file_path, get_rank_and_world_size, load
 from vlmeval.utils import track_progress_rich
 
-FAIL_MSG = 'Failed to obtain answer via API.'
+FAIL_MSG = 'Failed to obtain answer'
 VIDEO_PROGRESS_BAR_FORMAT = '{desc}: {n_fmt}/{total_fmt}|{bar}| {elapsed}<{remaining}'
+SKIP_SAMPLE = object()
+
+
+class InferenceTimeoutError(TimeoutError):
+    pass
+
+
+def _run_with_timeout(func, timeout_seconds, *args, **kwargs):
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return func(*args, **kwargs)
+
+    if (
+        hasattr(signal, 'SIGALRM')
+        and hasattr(signal, 'ITIMER_REAL')
+        and threading.current_thread() is threading.main_thread()
+    ):
+        def handler(signum, frame):
+            raise InferenceTimeoutError(f'Inference exceeded {timeout_seconds}s')
+
+        old_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, handler)
+        signal.setitimer(signal.ITIMER_REAL, float(timeout_seconds))
+        try:
+            return func(*args, **kwargs)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old_handler)
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func, *args, **kwargs)
+    try:
+        result = future.result(timeout=timeout_seconds)
+    except FutureTimeoutError as err:
+        future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise InferenceTimeoutError(f'Inference exceeded {timeout_seconds}s') from err
+    else:
+        executor.shutdown(wait=True, cancel_futures=False)
+        return result
+
+
+def _truncate_text(text, limit=200):
+    text = ' '.join(str(text).split())
+    if len(text) <= limit:
+        return text
+    return text[:limit - 3] + '...'
+
+
+def _get_sample_debug_info(sample):
+    index_value = sample.get('index', 'unknown')
+
+    video_value = sample.get('video_path', None)
+    if video_value is None or str(video_value).strip() == '' or str(video_value).lower() == 'nan':
+        video_value = sample.get('video', 'unknown')
+
+    question_value = sample.get('question', '')
+    return (
+        f'index={index_value}, '
+        f'video={_truncate_text(video_value, limit=160)}, '
+        f'question={_truncate_text(question_value, limit=240)}'
+    )
+
+
+def _timeout_fail_response(timeout_seconds):
+    return f'{FAIL_MSG}: Inference timeout after {timeout_seconds}s'
+
+
+def _infer_single_video_sample(model, dataset, sample, sample_ref, dataset_name):
+    if hasattr(model, 'use_custom_prompt') and model.use_custom_prompt(dataset_name):
+        if dataset.nframe == 0:
+            raise ValueError(f'nframe must be set for custom prompt, fps is not suitable for {type(model).__name__}')
+        struct = model.build_prompt(
+            sample, dataset=dataset, video_llm=getattr(model, 'VIDEO_LLM', False)
+        )
+    else:
+        struct = dataset.build_prompt(sample_ref, video_llm=getattr(model, 'VIDEO_LLM', False))
+
+    if struct is None:
+        return SKIP_SAMPLE
+
+    return model.generate(message=struct, dataset=dataset_name)
 
 
 def parse_args():
@@ -97,7 +180,7 @@ def infer_data_api(model, work_dir, model_name, dataset, samples_dict={}, api_np
 
 
 def infer_data(model, model_name, work_dir, dataset, out_file, verbose=False, api_nproc=4, use_vllm=False,
-               retry_failed=True):
+               retry_failed=True, infer_timeout=0):
     dataset_name = dataset.dataset_name
     prev_file = f'{work_dir}/{model_name}_{dataset_name}_PREV.pkl'
     res = load(prev_file) if osp.exists(prev_file) else {}
@@ -167,6 +250,7 @@ def infer_data(model, model_name, work_dir, dataset, out_file, verbose=False, ap
         for i, idx in enumerate(sample_indices_subrem):
             if idx in res:
                 continue
+            sample = dataset.data.iloc[sample_map[idx]]
             if getattr(model, 'nframe', None) is not None and getattr(model, 'nframe', 0) > 0:
                 if dataset.nframe > 0:
                     if getattr(model, 'nframe', 0) != dataset.nframe:
@@ -197,32 +281,36 @@ def infer_data(model, model_name, work_dir, dataset, out_file, verbose=False, ap
                     print(f'using {model_name} default setting for video, dataset.nframe is ommitted')
                 if getattr(model, 'fps', None) is None and dataset.fps > 0:
                     print(f'using {model_name} default setting for video, dataset.fps is ommitted')
-            if 'SUB_DATASET' in dataset.data.iloc[sample_map[idx]]:
-                dataset_name = dataset.data.iloc[sample_map[idx]]['SUB_DATASET']
-            if hasattr(model, 'use_custom_prompt') and model.use_custom_prompt(dataset_name):
-                if dataset.nframe == 0:
-                    raise ValueError(f'nframe must be set for custom prompt, fps is not suitable for {model_name}')
-                struct = model.build_prompt(
-                    dataset.data.iloc[sample_map[idx]], dataset=dataset, video_llm=getattr(model, 'VIDEO_LLM', False)
-                )
-            else:
-                struct = dataset.build_prompt(
-                    sample_map[idx], video_llm=getattr(model, 'VIDEO_LLM', False)
-                )
-            if struct is None:
-                continue
-
-            # If `SKIP_ERR` flag is set, the model will skip the generation if error is encountered
-            if os.environ.get('SKIP_ERR', False) == '1':
-                FAIL_MSG = 'Failed to obtain answer'
+            current_dataset_name = sample.get('SUB_DATASET', dataset_name)
+            if current_dataset_name is None or str(current_dataset_name).strip() == '' or str(current_dataset_name).lower() == 'nan':
+                current_dataset_name = dataset_name
+            if infer_timeout or os.environ.get('SKIP_ERR', False) == '1':
                 try:
-                    response = model.generate(message=struct, dataset=dataset_name)
-                except RuntimeError as err:
-                    torch.cuda.synchronize()
-                    warnings.error(f'{type(err)} {str(err)}')
-                    response = f'{FAIL_MSG}: {type(err)} {str(err)}'
+                    response = _run_with_timeout(
+                        _infer_single_video_sample,
+                        infer_timeout,
+                        model,
+                        dataset,
+                        sample,
+                        sample_map[idx],
+                        current_dataset_name,
+                    )
+                except InferenceTimeoutError as err:
+                    sample_debug_info = _get_sample_debug_info(sample)
+                    print(f'[VideoInfer][TIMEOUT] timeout={infer_timeout}s, {sample_debug_info}', flush=True)
+                    response = _timeout_fail_response(infer_timeout)
+                except Exception as err:
+                    response = f'{FAIL_MSG}: {type(err).__name__} {err}'
             else:
-                response = model.generate(message=struct, dataset=dataset_name)
+                response = _infer_single_video_sample(
+                    model,
+                    dataset,
+                    sample,
+                    sample_map[idx],
+                    current_dataset_name,
+                )
+            if response is SKIP_SAMPLE:
+                continue
             torch.cuda.empty_cache()
 
             if verbose:
@@ -246,7 +334,8 @@ def infer_data_job_video(model,
                          verbose=False,
                          api_nproc=4,
                          use_vllm=False,
-                         retry_failed=True):
+                         retry_failed=True,
+                         infer_timeout=0):
 
     dataset_name = dataset.dataset_name
     rank, world_size = get_rank_and_world_size()
@@ -281,7 +370,8 @@ def infer_data_job_video(model,
         verbose=verbose,
         api_nproc=api_nproc,
         use_vllm=use_vllm,
-        retry_failed=retry_failed)
+        retry_failed=retry_failed,
+        infer_timeout=infer_timeout)
 
     if world_size > 1:
         dist.barrier()

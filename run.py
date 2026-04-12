@@ -480,6 +480,8 @@ You can launch the evaluation by setting either --data and --model or --config.
     parser.add_argument('--repetition-penalty', type=float, default=None)
     parser.add_argument('--timeout', type=int, default=1800,
                         help='Max time in seconds for a single inference request.')
+    parser.add_argument('--video-infer-timeout', type=int, default=0,
+                        help='Max time in seconds for a single local video sample. 0 disables timeout.')
     parser.add_argument('--custom-prompt', type=str, default=None,
                         help='Manually select a model adapter by name.')
     parser.add_argument('--extra-body', type=str, default=None,
@@ -729,7 +731,8 @@ def run_local_mode(args):
                             verbose=args.verbose,
                             api_nproc=args.api_nproc,
                             use_vllm=args.use_vllm,
-                            retry_failed=not args.keep_failed)
+                            retry_failed=not args.keep_failed,
+                            infer_timeout=args.video_infer_timeout)
                     elif dataset.TYPE == 'MT':
                         model = infer_data_job_mt(
                             model,
